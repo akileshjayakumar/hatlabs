@@ -3,23 +3,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  ArrowLeft,
-  Loader2,
-  RefreshCw,
-  Send,
-} from "lucide-react";
+import { ArrowLeft, Download, Loader2, RefreshCw, Send } from "lucide-react";
 import dynamic from "next/dynamic";
+import {
+  AnalysisData,
+  AsyncStatus,
+  Concept,
+  ResultsData,
+  parseApiResponse,
+} from "@/lib/hatlab";
+import type { AngleImage } from "@/components/HatAngleViewer";
 
 const HatPhotoViewer = dynamic(() => import("@/components/HatPhotoViewer"), {
   ssr: false,
 });
 
-const Hat3DViewer = dynamic(() => import("@/components/Hat3DViewer"), {
+const HatAngleViewer = dynamic(() => import("@/components/HatAngleViewer"), {
   ssr: false,
 });
 
-// Re-use pastel map for gallery card backgrounds
 const PASTEL_MAP: Record<string, string> = {
   "soft lavender pastel": "#e8d5f5",
   "mint green pastel": "#c8f5e8",
@@ -30,33 +32,6 @@ const PASTEL_MAP: Record<string, string> = {
   "sage green pastel": "#c8d8c0",
   "lilac purple pastel": "#d8c8f0",
 };
-
-interface Concept {
-  name: string;
-  base_colour: string;
-  front_design: string;
-  palette: string[];
-  style: string;
-  rationale: string;
-  hatImage?: string;
-  hatMimeType?: string;
-  hatBackground?: string;
-  render3DImage?: string;
-  render3DMimeType?: string;
-}
-
-interface AnalysisData {
-  visual_summary: string;
-  palette: string[];
-  symbols: string[];
-  style_keywords: string[];
-  hat_design_opportunities: string[];
-}
-
-interface ResultsData {
-  analysis: AnalysisData;
-  concepts: Concept[];
-}
 
 const THINKING_STEPS = [
   "Scanning photo composition...",
@@ -79,76 +54,123 @@ const HAT_NEUTRALS = [
 ];
 
 type Phase = "loading" | "gallery" | "studio";
-type StudioPanel = "colors" | "edit" | "tryon" | null;
+type StudioPanel = "colors" | "edit" | "preview3d" | null;
+
+interface ImageState {
+  status: AsyncStatus;
+  imageData?: string;
+  mimeType?: string;
+  background?: string;
+  error?: string;
+}
+
+interface ConceptView extends Concept {
+  image: ImageState;
+}
+
+interface ResultsViewData {
+  analysis: AnalysisData;
+  concepts: ConceptView[];
+}
+
+function createIdleImageState(): ImageState {
+  return { status: "idle" };
+}
+
+function hydrateResults(data: ResultsData): ResultsViewData {
+  return {
+    ...data,
+    concepts: data.concepts.map((concept) => ({
+      ...concept,
+      image: createIdleImageState(),
+    })),
+  };
+}
+
+function toPersistedResults(data: ResultsViewData): ResultsData {
+  return {
+    analysis: data.analysis,
+    concepts: data.concepts.map((concept) => ({
+      name: concept.name,
+      base_colour: concept.base_colour,
+      front_design: concept.front_design,
+      palette: concept.palette,
+      style: concept.style,
+      rationale: concept.rationale,
+    })),
+  };
+}
 
 export default function ResultsPage() {
   const router = useRouter();
-
-  // Core state
-  const [data, setData] = useState<ResultsData | null>(null);
+  const [data, setData] = useState<ResultsViewData | null>(null);
   const [sourceImage, setSourceImage] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("loading");
   const [activeIdx, setActiveIdx] = useState(0);
-
-  // Loading
   const [isGeneratingConcepts, setIsGeneratingConcepts] = useState(false);
   const [conceptError, setConceptError] = useState<string | null>(null);
   const [thinkingStep, setThinkingStep] = useState(0);
-
-  // Image generation (per-concept)
-  const [generatingImageFor, setGeneratingImageFor] = useState<Set<number>>(
-    new Set(),
-  );
-  const [generating3DFor, setGenerating3DFor] = useState<Set<number>>(
-    new Set(),
-  );
-  const [render3DErrors, setRender3DErrors] = useState<Record<number, string>>(
-    {},
-  );
-
-  // Refinement
   const [isRefining, setIsRefining] = useState(false);
   const [refineText, setRefineText] = useState("");
-
-  // Studio panels
   const [activePanel, setActivePanel] = useState<StudioPanel>(null);
-
-  // Edit mode
   const [editCircle, setEditCircle] = useState<{ zone: string } | null>(null);
   const [editPrompt, setEditPrompt] = useState("");
 
-  // Gallery scroll ref
-  const galleryRef = useRef<HTMLDivElement>(null);
-  const activeConcept = data?.concepts[activeIdx];
+  const [angleImages, setAngleImages] = useState<Record<number, AngleImage[]>>({});
 
-  const saveSlimResults = useCallback((nextData: ResultsData) => {
+  const galleryRef = useRef<HTMLDivElement>(null);
+  const dataRef = useRef<ResultsViewData | null>(null);
+  const requestVersionsRef = useRef<Record<number, number>>({});
+  const angleImagesRef = useRef<Record<number, AngleImage[]>>({});
+  const isGeneratingAnglesRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    angleImagesRef.current = angleImages;
+  }, [angleImages]);
+
+  const saveSlimResults = useCallback((nextData: ResultsViewData) => {
     try {
-      const slim = {
-        ...nextData,
-        concepts: nextData.concepts.map((concept) => {
-          const slimConcept = { ...concept };
-          delete slimConcept.hatImage;
-          delete slimConcept.hatMimeType;
-          delete slimConcept.render3DImage;
-          delete slimConcept.render3DMimeType;
-          return slimConcept;
-        }),
-      };
-      sessionStorage.setItem("hatlab-concepts", JSON.stringify(slim));
+      sessionStorage.setItem(
+        "hatlab-concepts",
+        JSON.stringify(toPersistedResults(nextData)),
+      );
     } catch {
-      // Ignore quota errors — data is still available in memory
+      // Ignore quota failures. The live state still works.
     }
   }, []);
 
-  // ── Hat image generation ──────────────────────────────────────
-  const generateHatImageForConcept = useCallback(
-    async (dataToUse: ResultsData, idx: number) => {
-      const concept = dataToUse.concepts[idx];
-      if (concept?.hatImage) return;
+  const updateConceptImage = useCallback(
+    (idx: number, image: ImageState) => {
+      setData((prev) => {
+        if (!prev || !prev.concepts[idx]) return prev;
+        const next = { ...prev, concepts: [...prev.concepts] };
+        next.concepts[idx] = { ...next.concepts[idx], image };
+        return next;
+      });
+    },
+    [],
+  );
 
-      setGeneratingImageFor((prev) => new Set(prev).add(idx));
+  const generateHatImageForConcept = useCallback(
+    async (idx: number, options?: { force?: boolean }) => {
+      const current = dataRef.current;
+      const concept = current?.concepts[idx];
+      if (!concept) return;
+
+      if (!options?.force && (concept.image.status === "loading" || concept.image.status === "ready")) {
+        return;
+      }
+
+      const requestVersion = (requestVersionsRef.current[idx] ?? 0) + 1;
+      requestVersionsRef.current[idx] = requestVersion;
+      updateConceptImage(idx, { status: "loading" });
+
       try {
-        const res = await fetch("/api/generate-hat-image", {
+        const response = await fetch("/api/generate-hat-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -159,153 +181,174 @@ export default function ResultsPage() {
             style: concept.style,
           }),
         });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || "Image generation failed");
+
+        const imageResult = await parseApiResponse<{
+          imageData: string;
+          mimeType: string;
+          background: string;
+        }>(response);
+
+        if (requestVersionsRef.current[idx] !== requestVersion) {
+          return;
         }
-        const imageResult = await res.json();
-        setData((prev) => {
-          if (!prev) return prev;
-          const updated = { ...prev, concepts: [...prev.concepts] };
-          updated.concepts[idx] = {
-            ...updated.concepts[idx],
-            hatImage: imageResult.imageData,
-            hatMimeType: imageResult.mimeType,
-            hatBackground: imageResult.background,
-            render3DImage: undefined,
-            render3DMimeType: undefined,
-          };
-          saveSlimResults(updated);
-          return updated;
+
+        updateConceptImage(idx, {
+          status: "ready",
+          imageData: imageResult.imageData,
+          mimeType: imageResult.mimeType,
+          background: imageResult.background,
         });
-      } catch (err) {
-        console.error(`Hat image generation failed for concept ${idx}:`, err);
+      } catch (error) {
+        if (requestVersionsRef.current[idx] !== requestVersion) {
+          return;
+        }
+
+        updateConceptImage(idx, {
+          status: "error",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Image generation failed.",
+        });
+      }
+    },
+    [updateConceptImage],
+  );
+
+  const ANGLE_PROMPTS = [
+    null, // angle 0 = front, reuse existing concept image
+    "Hat placed on an invisible surface viewed at a 45-degree angle from the front-right, showing the right side of the brim and front panel design",
+    "Hat placed on an invisible surface shown from the pure right side in a clean profile view at 90 degrees",
+    "Hat placed on an invisible surface shown from directly behind, revealing the back of the crown and the adjustable strap",
+    "Hat placed on an invisible surface shown from the pure left side in a clean profile view at 90 degrees",
+    "Hat placed on an invisible surface viewed at a 45-degree angle from the front-left, showing the left side of the brim and front panel design",
+  ];
+
+  const generateAnglesForConcept = useCallback(
+    async (conceptIdx: number) => {
+      if (isGeneratingAnglesRef.current.has(conceptIdx)) return;
+
+      const concept = dataRef.current?.concepts[conceptIdx];
+      if (!concept?.image.imageData) return;
+
+      // Already fully generated
+      const existing = angleImagesRef.current[conceptIdx];
+      if (
+        existing?.length === 6 &&
+        existing.every((a) => a.status === "ready" || a.status === "error")
+      )
+        return;
+
+      isGeneratingAnglesRef.current.add(conceptIdx);
+
+      const initial: AngleImage[] = [
+        { status: "ready", imageData: concept.image.imageData, mimeType: concept.image.mimeType },
+        { status: "loading" },
+        { status: "loading" },
+        { status: "loading" },
+        { status: "loading" },
+        { status: "loading" },
+      ];
+      setAngleImages((prev) => ({ ...prev, [conceptIdx]: initial }));
+
+      const anglePromises = ANGLE_PROMPTS.slice(1).map(async (anglePrompt, i) => {
+        const angleIdx = i + 1;
+        try {
+          const response = await fetch("/api/generate-hat-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conceptName: concept.name,
+              baseColour: concept.base_colour,
+              frontDesign: concept.front_design,
+              palette: concept.palette,
+              style: concept.style,
+              anglePrompt,
+            }),
+          });
+          const result = await parseApiResponse<{
+            imageData: string;
+            mimeType: string;
+            background: string;
+          }>(response);
+          setAngleImages((prev) => {
+            const arr = prev[conceptIdx] ? [...prev[conceptIdx]] : [...initial];
+            arr[angleIdx] = { status: "ready", imageData: result.imageData, mimeType: result.mimeType };
+            return { ...prev, [conceptIdx]: arr };
+          });
+        } catch (error) {
+          setAngleImages((prev) => {
+            const arr = prev[conceptIdx] ? [...prev[conceptIdx]] : [...initial];
+            arr[angleIdx] = {
+              status: "error",
+              error: error instanceof Error ? error.message : "Generation failed.",
+            };
+            return { ...prev, [conceptIdx]: arr };
+          });
+        }
+      });
+
+      await Promise.allSettled(anglePromises);
+      isGeneratingAnglesRef.current.delete(conceptIdx);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const clearAnglesForConcept = useCallback((idx: number) => {
+    isGeneratingAnglesRef.current.delete(idx);
+    setAngleImages((prev) => {
+      const next = { ...prev };
+      delete next[idx];
+      return next;
+    });
+  }, []);
+
+  const generateConceptsFromImage = useCallback(
+    async (image: string) => {
+      setThinkingStep(0);
+      setConceptError(null);
+      setIsGeneratingConcepts(true);
+
+      try {
+        const storedImages = sessionStorage.getItem("hatlab-images");
+        const images: string[] = storedImages ? JSON.parse(storedImages) : [image];
+        const response = await fetch("/api/generate-concepts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ images }),
+        });
+        const parsed = await parseApiResponse<ResultsData>(response);
+        const hydrated = hydrateResults(parsed);
+        setActiveIdx(0);
+        setData(hydrated);
+        saveSlimResults(hydrated);
+        setPhase("gallery");
+      } catch (error) {
+        setConceptError(
+          error instanceof Error ? error.message : "Failed to analyze image.",
+        );
       } finally {
-        setGeneratingImageFor((prev) => {
-          const next = new Set(prev);
-          next.delete(idx);
-          return next;
-        });
+        setIsGeneratingConcepts(false);
       }
     },
     [saveSlimResults],
   );
 
-  const generate3DRenderForConcept = useCallback(
-    async (dataToUse: ResultsData, idx: number) => {
-      const concept = dataToUse.concepts[idx];
-      if (!concept?.hatImage || concept.render3DImage) return;
-
-      setGenerating3DFor((prev) => new Set(prev).add(idx));
-      setRender3DErrors((prev) => {
-        const next = { ...prev };
-        delete next[idx];
-        return next;
-      });
-
-      try {
-        const res = await fetch("/api/generate-hat-3d-render", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            hatImage: concept.hatImage,
-            hatMimeType: concept.hatMimeType || "image/png",
-            conceptName: concept.name,
-            baseColour: concept.base_colour,
-            frontDesign: concept.front_design,
-            palette: concept.palette,
-            style: concept.style,
-          }),
-        });
-
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(body.error || "3D render generation failed");
-        }
-
-        setData((prev) => {
-          if (!prev) return prev;
-          const updated = { ...prev, concepts: [...prev.concepts] };
-          updated.concepts[idx] = {
-            ...updated.concepts[idx],
-            render3DImage: body.imageData,
-            render3DMimeType: body.mimeType,
-          };
-          return updated;
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Failed to generate 3D render.";
-        setRender3DErrors((prev) => ({ ...prev, [idx]: message }));
-      } finally {
-        setGenerating3DFor((prev) => {
-          const next = new Set(prev);
-          next.delete(idx);
-          return next;
-        });
-      }
-    },
-    [],
-  );
-
-  // ── Concept generation ─────────────────────────────────────────
-  const generateConceptsFromImage = useCallback(
-    async (image: string) => {
-      setThinkingStep(0);
-      setIsGeneratingConcepts(true);
-      setConceptError(null);
-      try {
-        const storedImages = sessionStorage.getItem("hatlab-images");
-        const images: string[] = storedImages ? JSON.parse(storedImages) : [image];
-        const res = await fetch("/api/generate-concepts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ images }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || "Failed to analyze image.");
-        }
-        const parsed: ResultsData = await res.json();
-        setActiveIdx(0);
-        setData(parsed);
-        sessionStorage.setItem("hatlab-concepts", JSON.stringify(parsed));
-        setIsGeneratingConcepts(false);
-
-        // Generate all 3 hat images in parallel
-        await Promise.allSettled(
-          parsed.concepts.map((_, idx) =>
-            generateHatImageForConcept(parsed, idx),
-          ),
-        );
-        setPhase("gallery");
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Failed to analyze image.";
-        setConceptError(message);
-        setIsGeneratingConcepts(false);
-      }
-    },
-    [generateHatImageForConcept],
-  );
-
-  // ── Init ───────────────────────────────────────────────────────
   useEffect(() => {
     const init = async () => {
       const storedImage = sessionStorage.getItem("hatlab-image");
       const rawData = sessionStorage.getItem("hatlab-concepts");
 
-      if (storedImage) setSourceImage(storedImage);
+      if (storedImage) {
+        setSourceImage(storedImage);
+      }
 
       if (rawData) {
         try {
           const parsed: ResultsData = JSON.parse(rawData);
-          setData(parsed);
-          await Promise.allSettled(
-            parsed.concepts.map((_, idx) =>
-              generateHatImageForConcept(parsed, idx),
-            ),
-          );
+          const hydrated = hydrateResults(parsed);
+          setData(hydrated);
           setPhase("gallery");
           return;
         } catch {
@@ -320,32 +363,43 @@ export default function ResultsPage() {
 
       router.replace("/");
     };
-    init();
-  }, [generateConceptsFromImage, generateHatImageForConcept, router]);
 
-  // ── Thinking step advancement ──────────────────────────────────
+    void init();
+  }, [generateConceptsFromImage, router]);
+
+  useEffect(() => {
+    if (!data || phase === "loading") return;
+
+    void generateHatImageForConcept(activeIdx);
+    data.concepts.forEach((concept, idx) => {
+      if (idx !== activeIdx && concept.image.status === "idle") {
+        void generateHatImageForConcept(idx);
+      }
+    });
+  }, [activeIdx, data, generateHatImageForConcept, phase]);
+
   useEffect(() => {
     if (isGeneratingConcepts) {
       const timings = [1800, 3500, 5500, 8000];
       const timeouts = timings.map((time) =>
         setTimeout(() => {
           setThinkingStep((prev) =>
-            Math.min(prev + 1, THINKING_STEPS.length - 2),
+            Math.min(prev + 1, THINKING_STEPS.length - 1),
           );
         }, time),
       );
+
       return () => timeouts.forEach(clearTimeout);
     }
   }, [isGeneratingConcepts]);
 
-  // Advance to "Rendering visuals" step when concepts are ready but images loading
   useEffect(() => {
-    if (!isGeneratingConcepts && generatingImageFor.size > 0) {
+    if (!data || isGeneratingConcepts) return;
+    if (data.concepts.some((concept) => concept.image.status === "loading")) {
       setThinkingStep(THINKING_STEPS.length - 1);
     }
-  }, [isGeneratingConcepts, generatingImageFor.size]);
+  }, [data, isGeneratingConcepts]);
 
-  // ── Gallery: track centered card on scroll ─────────────────────
   useEffect(() => {
     if (phase !== "gallery") return;
     const container = galleryRef.current;
@@ -357,6 +411,7 @@ export default function ResultsPage() {
       const cards = container.querySelectorAll("[data-concept-card]");
       let closestIdx = 0;
       let closestDist = Infinity;
+
       cards.forEach((card, idx) => {
         const rect = card.getBoundingClientRect();
         const cardCenter = rect.left + rect.width / 2;
@@ -366,6 +421,7 @@ export default function ResultsPage() {
           closestIdx = idx;
         }
       });
+
       setActiveIdx(closestIdx);
     };
 
@@ -373,167 +429,150 @@ export default function ResultsPage() {
     return () => container.removeEventListener("scroll", handleScroll);
   }, [phase]);
 
-  // ── Scroll gallery to active card when returning from studio ───
   useEffect(() => {
     if (phase !== "gallery" || !galleryRef.current) return;
-    const container = galleryRef.current;
-    const cards = container.querySelectorAll(
+    const cards = galleryRef.current.querySelectorAll(
       "[data-concept-card]",
     ) as NodeListOf<HTMLElement>;
     const card = cards[activeIdx];
+
     if (card) {
-      card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      card.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "center",
+      });
     }
-  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeIdx, phase]);
 
-  useEffect(() => {
-    if (
-      phase !== "studio" ||
-      activePanel !== "tryon" ||
-      !data ||
-      !activeConcept?.hatImage ||
-      activeConcept.render3DImage ||
-      generating3DFor.has(activeIdx)
-    ) {
-      return;
-    }
-
-    void generate3DRenderForConcept(data, activeIdx);
-  }, [
-    activeConcept?.hatImage,
-    activeConcept?.render3DImage,
-    activeIdx,
-    activePanel,
-    data,
-    generate3DRenderForConcept,
-    generating3DFor,
-    phase,
-  ]);
-
-  // ── Handlers ───────────────────────────────────────────────────
-  const handleRetryConcepts = () => {
+  const handleRetryConcepts = useCallback(() => {
     if (!sourceImage || isGeneratingConcepts) return;
-    generateConceptsFromImage(sourceImage);
-  };
+    void generateConceptsFromImage(sourceImage);
+  }, [generateConceptsFromImage, isGeneratingConcepts, sourceImage]);
 
-  const handleRefine = async (promptText: string, zoneHint?: string) => {
-    if (!promptText.trim() || isRefining || !data) return;
-    setIsRefining(true);
-    try {
-      const concept = data.concepts[activeIdx];
-      const conceptWithoutImage = {
-        name: concept.name,
-        base_colour: concept.base_colour,
-        front_design: concept.front_design,
-        palette: concept.palette,
-        style: concept.style,
-        rationale: concept.rationale,
+  const handleRetryImage = useCallback(
+    (idx: number) => {
+      void generateHatImageForConcept(idx, { force: true });
+    },
+    [generateHatImageForConcept],
+  );
+
+  const handleDownload = useCallback((idx: number) => {
+    const concept = dataRef.current?.concepts[idx];
+    if (!concept || concept.image.status !== "ready" || !concept.image.imageData)
+      return;
+
+    const link = document.createElement("a");
+    link.href = `data:${concept.image.mimeType || "image/png"};base64,${concept.image.imageData}`;
+    link.download = `${concept.name.toLowerCase().replace(/\s+/g, "-")}-hat.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, []);
+
+  const handleRefine = useCallback(
+    async (promptText: string, zoneHint?: string) => {
+      if (!promptText.trim() || !dataRef.current || isRefining) return;
+
+      setIsRefining(true);
+      const current = dataRef.current;
+      const concept = current?.concepts[activeIdx];
+      if (!current || !concept) {
+        setIsRefining(false);
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/refine-concept", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            originalConcept: {
+              name: concept.name,
+              base_colour: concept.base_colour,
+              front_design: concept.front_design,
+              palette: concept.palette,
+              style: concept.style,
+              rationale: concept.rationale,
+            },
+            analysis: current.analysis,
+            refinementPrompt: promptText,
+            ...(zoneHint ? { zoneHint } : {}),
+          }),
+        });
+
+        const refined = await parseApiResponse<Concept>(response);
+        const next = {
+          ...current,
+          concepts: [...current.concepts],
+        };
+
+        next.concepts[activeIdx] = {
+          ...refined,
+          image: createIdleImageState(),
+        };
+
+        setData(next);
+        saveSlimResults(next);
+        setRefineText("");
+        setEditPrompt("");
+        setEditCircle(null);
+        clearAnglesForConcept(activeIdx);
+        void generateHatImageForConcept(activeIdx, { force: true });
+      } catch (error) {
+        alert(error instanceof Error ? error.message : "Failed to refine concept.");
+      } finally {
+        setIsRefining(false);
+      }
+    },
+    [activeIdx, clearAnglesForConcept, generateHatImageForConcept, isRefining, saveSlimResults],
+  );
+
+  const handleColorSelect = useCallback(
+    (colorHex: string) => {
+      const current = dataRef.current;
+      if (!current) return;
+
+      const next = {
+        ...current,
+        concepts: [...current.concepts],
       };
 
-      const res = await fetch("/api/refine-concept", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          originalConcept: conceptWithoutImage,
-          analysis: data.analysis,
-          refinementPrompt: promptText,
-          ...(zoneHint ? { zoneHint } : {}),
-        }),
-      });
-      if (!res.ok) throw new Error("Refinement failed");
-      const newConcept: Concept = await res.json();
-      newConcept.hatImage = undefined;
-      newConcept.hatMimeType = undefined;
-      newConcept.hatBackground = undefined;
-      newConcept.render3DImage = undefined;
-      newConcept.render3DMimeType = undefined;
-      const updatedConcepts = [...data.concepts];
-      updatedConcepts[activeIdx] = newConcept;
-      const newData = { ...data, concepts: updatedConcepts };
-      setData(newData);
-      saveSlimResults(newData);
-      setRender3DErrors((prev) => {
-        const next = { ...prev };
-        delete next[activeIdx];
-        return next;
-      });
-      setRefineText("");
-      await generateHatImageForConcept(newData, activeIdx);
-    } catch {
-      alert("Failed to refine. Try again.");
-    } finally {
-      setIsRefining(false);
-    }
-  };
+      next.concepts[activeIdx] = {
+        ...next.concepts[activeIdx],
+        base_colour: colorHex,
+        image: createIdleImageState(),
+      };
 
-  const handleColorSelect = (colorHex: string) => {
-    if (!data || generatingImageFor.has(activeIdx)) return;
+      setData(next);
+      saveSlimResults(next);
+      clearAnglesForConcept(activeIdx);
+      void generateHatImageForConcept(activeIdx, { force: true });
+    },
+    [activeIdx, clearAnglesForConcept, generateHatImageForConcept, saveSlimResults],
+  );
 
-    const updatedConcepts = [...data.concepts];
-    updatedConcepts[activeIdx] = {
-      ...updatedConcepts[activeIdx],
-      base_colour: colorHex,
-      hatImage: undefined,
-      hatMimeType: undefined,
-      hatBackground: undefined,
-      render3DImage: undefined,
-      render3DMimeType: undefined,
-    };
-    const newData = { ...data, concepts: updatedConcepts };
-    setData(newData);
-    saveSlimResults(newData);
-    setRender3DErrors((prev) => {
-      const next = { ...prev };
-      delete next[activeIdx];
-      return next;
-    });
-    void generateHatImageForConcept(newData, activeIdx);
-  };
-
-  const handleCircleDrawn = (zone: string) => {
-    setEditCircle({ zone });
-  };
-
-  const handleCircleEditSubmit = async (prompt: string) => {
-    if (!editCircle || !prompt.trim()) return;
-    setEditCircle(null);
-    setEditPrompt("");
-    setActivePanel(null);
-    await handleRefine(prompt, editCircle.zone);
-  };
-
-  const togglePanel = (panel: StudioPanel) => {
-    if (activePanel === panel) {
+  const handleCircleEditSubmit = useCallback(
+    async (prompt: string) => {
+      if (!editCircle || !prompt.trim()) return;
       setActivePanel(null);
-      setEditCircle(null);
-      setEditPrompt("");
-    } else {
-      setActivePanel(panel);
-      setEditCircle(null);
-      setEditPrompt("");
-    }
-  };
+      await handleRefine(prompt, editCircle.zone);
+    },
+    [editCircle, handleRefine],
+  );
 
-  const enterStudio = () => {
-    setActivePanel(null);
-    setEditCircle(null);
-    setPhase("studio");
-  };
+  const activeConcept = data?.concepts[activeIdx];
+  const isActiveGenerating = activeConcept?.image.status === "loading";
+  const busy = isGeneratingConcepts || isRefining || isActiveGenerating;
 
-  const exitStudio = () => {
-    setActivePanel(null);
-    setEditCircle(null);
-    setPhase("gallery");
-  };
+  const statusText = isGeneratingConcepts
+    ? "Generating concepts…"
+    : isRefining
+      ? "Refining…"
+      : activePanel === "preview3d"
+        ? `${activeConcept?.name || "Hat"} · 360° View`
+        : activeConcept?.name || "HatLab";
 
-  // ── Derived ────────────────────────────────────────────────────
-  const isActiveGenerating = generatingImageFor.has(activeIdx);
-  const isRendering3D = generating3DFor.has(activeIdx);
-  const busy = isGeneratingConcepts || isRefining || isActiveGenerating || isRendering3D;
-
-  // ══════════════════════════════════════════════════════════════
-  // LOADING PHASE — error variant
-  // ══════════════════════════════════════════════════════════════
   if (phase === "loading" && conceptError) {
     return (
       <div
@@ -547,7 +586,7 @@ export default function ResultsPage() {
               width: "36px",
               height: "36px",
               borderRadius: "50%",
-              background: "rgba(184,151,100,0.12)",
+              background: "rgba(184,151,100,0.14)",
               border: "1.5px solid var(--color-border)",
               display: "flex",
               alignItems: "center",
@@ -561,7 +600,7 @@ export default function ResultsPage() {
         </div>
 
         <div className="relative z-10 flex flex-col items-center justify-start pt-[120px] px-5 pb-12 flex-1">
-          {sourceImage && (
+          {sourceImage ? (
             <motion.div
               initial={{ opacity: 0, scale: 0.96 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -581,7 +620,8 @@ export default function ResultsPage() {
                 }}
               />
             </motion.div>
-          )}
+          ) : null}
+
           <motion.div
             initial={{ y: 16, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -610,7 +650,7 @@ export default function ResultsPage() {
                 fontFamily: "var(--font-serif)",
               }}
             >
-              Couldn&apos;t read that photo.
+              Couldn&apos;t build those concepts.
             </h2>
             <p
               style={{
@@ -648,9 +688,6 @@ export default function ResultsPage() {
                   fontStyle: "italic",
                   fontSize: "0.95rem",
                   cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
                 }}
               >
                 Choose Another Photo
@@ -662,16 +699,18 @@ export default function ResultsPage() {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // LOADING PHASE
-  // ══════════════════════════════════════════════════════════════
   if (phase === "loading") {
     return (
       <div
         className="relative flex flex-col overflow-hidden"
-        style={{ background: "var(--color-bg)", minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center" }}
+        style={{
+          background: "var(--color-bg)",
+          minHeight: "100dvh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
       >
-        {/* Content */}
         <div
           style={{
             display: "flex",
@@ -681,7 +720,6 @@ export default function ResultsPage() {
             padding: "0 36px",
           }}
         >
-          {/* Wordmark */}
           <motion.h1
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -699,7 +737,6 @@ export default function ResultsPage() {
             hatlab.
           </motion.h1>
 
-          {/* Thinking steps */}
           <div
             style={{
               display: "flex",
@@ -744,8 +781,15 @@ export default function ResultsPage() {
                             style={{ color: "var(--color-brand)" }}
                           />
                           <motion.div
-                            animate={{ scale: [1, 1.5, 1], opacity: [0.3, 0, 0.3] }}
-                            transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+                            animate={{
+                              scale: [1, 1.5, 1],
+                              opacity: [0.3, 0, 0.3],
+                            }}
+                            transition={{
+                              duration: 1.6,
+                              repeat: Infinity,
+                              ease: "easeInOut",
+                            }}
                             style={{
                               position: "absolute",
                               inset: 0,
@@ -782,15 +826,13 @@ export default function ResultsPage() {
             </AnimatePresence>
           </div>
         </div>
-
       </div>
     );
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // GALLERY PHASE
-  // ══════════════════════════════════════════════════════════════
   if (phase === "gallery" && data) {
+    const galleryActiveConcept = data.concepts[activeIdx];
+
     return (
       <motion.div
         key="gallery"
@@ -806,19 +848,26 @@ export default function ResultsPage() {
           overflow: "hidden",
         }}
       >
-        {/* Header */}
-        <div style={{ padding: "52px 24px 16px", textAlign: "center" }}>
-          <p
+        <div className="absolute top-0 left-0 z-20 px-5 pt-14">
+          <button
+            onClick={() => router.push("/")}
             style={{
-              fontSize: "0.62rem",
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--color-text-muted)",
-              marginBottom: "6px",
+              width: "36px",
+              height: "36px",
+              borderRadius: "50%",
+              background: "rgba(184,151,100,0.14)",
+              border: "1.5px solid var(--color-border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--color-text)",
+              cursor: "pointer",
             }}
           >
-            3 concepts for you
-          </p>
+            <ArrowLeft size={17} />
+          </button>
+        </div>
+        <div style={{ padding: "52px 24px 16px", textAlign: "center" }}>
           <h1
             style={{
               fontFamily: "var(--font-serif)",
@@ -834,21 +883,25 @@ export default function ResultsPage() {
           </h1>
         </div>
 
-        {/* Card rail */}
         <div
           ref={galleryRef}
           className="gallery-scroll"
           style={{
             flex: 1,
-            padding: `16px calc(50vw - 130px)`,
+            padding: "16px calc(50vw - 110px)",
           }}
         >
           {data.concepts.map((concept, idx) => {
             const bgColor =
-              PASTEL_MAP[concept.hatBackground || ""] || "#f0e6d3";
+              PASTEL_MAP[concept.image.background || ""] || "#f0e6d3";
+            const isLoading =
+              concept.image.status === "loading" ||
+              concept.image.status === "idle";
+            const hasError = concept.image.status === "error";
+
             return (
               <motion.div
-                key={idx}
+                key={`${concept.name}-${idx}`}
                 data-concept-card={idx}
                 className="gallery-card"
                 animate={{
@@ -858,25 +911,55 @@ export default function ResultsPage() {
                 transition={{ type: "spring", stiffness: 380, damping: 32 }}
                 onClick={() => setActiveIdx(idx)}
                 style={{
-                  width: "260px",
-                  height: "360px",
+                  width: "220px",
+                  height: "280px",
                   background: bgColor,
+                  position: "relative",
                 }}
               >
-                {/* Hat image */}
+                {concept.image.status === "ready" && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDownload(idx);
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: "12px",
+                      right: "12px",
+                      width: "32px",
+                      height: "32px",
+                      borderRadius: "50%",
+                      background: "rgba(255,255,255,0.25)",
+                      backdropFilter: "blur(4px)",
+                      border: "1px solid rgba(255,255,255,0.3)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "rgba(0,0,0,0.6)",
+                      cursor: "pointer",
+                      zIndex: 10,
+                    }}
+                  >
+                    <Download size={15} />
+                  </button>
+                )}
                 <div
                   style={{
-                    height: "75%",
+                    height: "100%",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     background: bgColor,
+                    padding: "12px",
+                    textAlign: "center",
                   }}
                 >
-                  {concept.hatImage ? (
+                  {concept.image.status === "ready" &&
+                  concept.image.imageData ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={`data:${concept.hatMimeType || "image/png"};base64,${concept.hatImage}`}
+                      src={`data:${concept.image.mimeType || "image/png"};base64,${concept.image.imageData}`}
                       alt={concept.name}
                       style={{
                         width: "90%",
@@ -885,77 +968,73 @@ export default function ResultsPage() {
                         display: "block",
                       }}
                     />
+                  ) : hasError ? (
+                    <div style={{ maxWidth: "180px" }}>
+                      <p
+                        style={{
+                          fontSize: "0.86rem",
+                          fontFamily: "var(--font-serif)",
+                          fontStyle: "italic",
+                          color: "var(--color-text)",
+                        }}
+                      >
+                        Couldn&apos;t render this hat.
+                      </p>
+                      <p
+                        style={{
+                          marginTop: "8px",
+                          fontSize: "0.72rem",
+                          lineHeight: 1.5,
+                          color: "var(--color-text-muted)",
+                        }}
+                      >
+                        {concept.image.error}
+                      </p>
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleRetryImage(idx);
+                        }}
+                        className="chip-vintage"
+                        style={{
+                          marginTop: "14px",
+                          padding: "8px 12px",
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </div>
                   ) : (
-                    <Loader2
-                      size={36}
-                      className="animate-spin"
-                      style={{ color: "var(--color-brand)", opacity: 0.45 }}
-                    />
+                    <div>
+                      <Loader2
+                        size={36}
+                        className="animate-spin"
+                        style={{
+                          color: "var(--color-brand)",
+                          opacity: 0.45,
+                          margin: "0 auto",
+                        }}
+                      />
+                      <p
+                        style={{
+                          marginTop: "12px",
+                          fontSize: "0.74rem",
+                          color: "var(--color-text-muted)",
+                          letterSpacing: "0.04em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {isLoading ? "Generating" : "Queued"}
+                      </p>
+                    </div>
                   )}
                 </div>
 
-                {/* Bottom info overlay */}
-                <div
-                  style={{
-                    position: "absolute",
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    padding: "28px 16px 16px",
-                    background:
-                      "linear-gradient(to bottom, transparent, rgba(0,0,0,0.58))",
-                  }}
-                >
-                  <div
-                    style={{
-                      fontFamily: "var(--font-serif)",
-                      fontStyle: "italic",
-                      fontWeight: 800,
-                      fontSize: "1.15rem",
-                      color: "#fff",
-                      letterSpacing: "-0.01em",
-                      lineHeight: 1.2,
-                    }}
-                  >
-                    {concept.name}
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      marginTop: "5px",
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: "10px",
-                        height: "10px",
-                        borderRadius: "50%",
-                        backgroundColor: concept.base_colour,
-                        border: "1.5px solid rgba(255,255,255,0.5)",
-                        display: "inline-block",
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontSize: "0.7rem",
-                        color: "rgba(255,255,255,0.7)",
-                        letterSpacing: "0.04em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {concept.style}
-                    </span>
-                  </div>
-                </div>
               </motion.div>
             );
           })}
         </div>
 
-        {/* CTA */}
         <div style={{ padding: "20px 24px 48px" }}>
           <button
             className="btn-primary"
@@ -968,9 +1047,15 @@ export default function ResultsPage() {
               justifyContent: "center",
               gap: "8px",
             }}
-            onClick={enterStudio}
+            onClick={() => {
+              setActivePanel(null);
+              setEditCircle(null);
+              setPhase("studio");
+            }}
           >
-            Design This One →
+            {galleryActiveConcept?.image.status === "ready"
+              ? "Design This One →"
+              : "Open Studio →"}
           </button>
           <p
             style={{
@@ -988,33 +1073,22 @@ export default function ResultsPage() {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // STUDIO PHASE
-  // ══════════════════════════════════════════════════════════════
-  if (!data || !activeConcept) return null;
+  if (!data || !activeConcept) {
+    return null;
+  }
 
-  // Build swatch list: concept colors + neutrals (deduped)
   const conceptSwatches = [
     { hex: activeConcept.base_colour, label: "base" },
-    ...activeConcept.palette.map((c) => ({ hex: c, label: "" })),
+    ...activeConcept.palette.map((color) => ({ hex: color, label: "" })),
   ];
+
   const allSwatches = [
     ...conceptSwatches,
-    ...HAT_NEUTRALS.map((n) => ({ hex: n.hex, label: n.name })),
+    ...HAT_NEUTRALS.map((neutral) => ({ hex: neutral.hex, label: neutral.name })),
   ].filter(
-    (s, i, arr) =>
-      arr.findIndex((x) => x.hex.toLowerCase() === s.hex.toLowerCase()) === i,
+    (swatch, idx, arr) =>
+      arr.findIndex((candidate) => candidate.hex.toLowerCase() === swatch.hex.toLowerCase()) === idx,
   );
-
-  const statusText = isRefining
-    ? "Refining…"
-    : isActiveGenerating
-      ? "Generating hat…"
-      : isRendering3D
-        ? "Rendering 3D…"
-      : activePanel === "tryon"
-        ? `${activeConcept.name} · 3D Render`
-      : activeConcept.name;
 
   return (
     <motion.div
@@ -1028,28 +1102,20 @@ export default function ResultsPage() {
         background: "var(--color-bg)",
       }}
     >
-      {/* Full-screen hat viewer */}
       <div style={{ position: "absolute", inset: 0 }}>
-        {activePanel === "tryon" ? (
-          <Hat3DViewer
-            imageData={activeConcept.render3DImage || null}
-            mimeType={activeConcept.render3DMimeType}
-            isLoading={isRendering3D || (!activeConcept.render3DImage && !!activeConcept.hatImage)}
-            error={render3DErrors[activeIdx] || null}
-            onRetry={() => void generate3DRenderForConcept(data, activeIdx)}
-          />
+        {activePanel === "preview3d" ? (
+          <HatAngleViewer angles={angleImages[activeIdx] ?? []} />
         ) : (
           <HatPhotoViewer
-            imageData={activeConcept.hatImage || null}
-            mimeType={activeConcept.hatMimeType}
-            isLoading={isActiveGenerating && !activeConcept.hatImage}
+            imageData={activeConcept.image.imageData || null}
+            mimeType={activeConcept.image.mimeType}
+            isLoading={activeConcept.image.status === "loading" || activeConcept.image.status === "idle"}
             editMode={activePanel === "edit" && !editCircle}
-            onCircleDrawn={handleCircleDrawn}
+            onCircleDrawn={(zone) => setEditCircle({ zone })}
           />
         )}
       </div>
 
-      {/* Top bar */}
       <div
         style={{
           position: "absolute",
@@ -1065,9 +1131,12 @@ export default function ResultsPage() {
           justifyContent: "space-between",
         }}
       >
-        {/* Back to gallery */}
         <button
-          onClick={exitStudio}
+          onClick={() => {
+            setActivePanel(null);
+            setEditCircle(null);
+            setPhase("gallery");
+          }}
           style={{
             width: "36px",
             height: "36px",
@@ -1085,7 +1154,6 @@ export default function ResultsPage() {
           <ArrowLeft size={17} />
         </button>
 
-        {/* Status */}
         <div
           style={{
             display: "flex",
@@ -1133,11 +1201,58 @@ export default function ResultsPage() {
           </span>
         </div>
 
-        {/* Spacer */}
         <div style={{ width: "36px" }} />
       </div>
 
-      {/* Bottom chrome: panels + FAB row */}
+      {activeConcept.image.status === "error" && activePanel !== "preview3d" ? (
+        <div
+          style={{
+            position: "absolute",
+            left: "20px",
+            right: "20px",
+            bottom: activePanel ? "176px" : "136px",
+            zIndex: 40,
+            padding: "16px 18px",
+            borderRadius: "18px",
+            border: "1.5px solid var(--color-border)",
+            background: "rgba(242,234,217,0.94)",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
+            textAlign: "center",
+          }}
+        >
+          <p
+            style={{
+              fontSize: "0.84rem",
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
+              color: "var(--color-text)",
+            }}
+          >
+            Couldn&apos;t generate this hat yet.
+          </p>
+          <p
+            style={{
+              marginTop: "8px",
+              fontSize: "0.74rem",
+              lineHeight: 1.5,
+              color: "var(--color-text-muted)",
+            }}
+          >
+            {activeConcept.image.error}
+          </p>
+          <button
+            onClick={() => handleRetryImage(activeIdx)}
+            className="chip-vintage"
+            style={{
+              marginTop: "14px",
+              padding: "8px 14px",
+            }}
+          >
+            Retry Hat Image
+          </button>
+        </div>
+      ) : null}
+
       <div
         style={{
           position: "absolute",
@@ -1152,10 +1267,8 @@ export default function ResultsPage() {
           gap: "12px",
         }}
       >
-        {/* Panel content (slides up) */}
         <AnimatePresence>
-          {/* Colors panel */}
-          {activePanel === "colors" && (
+          {activePanel === "colors" ? (
             <motion.div
               key="colors-panel"
               initial={{ y: 32, opacity: 0 }}
@@ -1190,22 +1303,21 @@ export default function ResultsPage() {
                   paddingBottom: "2px",
                 }}
               >
-                {allSwatches.map((swatch, i) => (
+                {allSwatches.map((swatch, idx) => (
                   <button
-                    key={i}
+                    key={`${swatch.hex}-${idx}`}
                     className={`swatch-dot${activeConcept.base_colour.toLowerCase() === swatch.hex.toLowerCase() ? " selected" : ""}`}
                     style={{ backgroundColor: swatch.hex }}
                     onClick={() => handleColorSelect(swatch.hex)}
-                    disabled={generatingImageFor.has(activeIdx)}
+                    disabled={busy}
                     title={swatch.label || swatch.hex}
                   />
                 ))}
               </div>
             </motion.div>
-          )}
+          ) : null}
 
-          {/* Edit panel — draw hint */}
-          {activePanel === "edit" && !editCircle && (
+          {activePanel === "edit" && !editCircle ? (
             <motion.div
               key="edit-hint"
               initial={{ y: 24, opacity: 0 }}
@@ -1230,10 +1342,9 @@ export default function ResultsPage() {
                 Draw on the hat to select an area
               </p>
             </motion.div>
-          )}
+          ) : null}
 
-          {/* Edit panel — zone captured, show prompt */}
-          {activePanel === "edit" && editCircle && (
+          {activePanel === "edit" && editCircle ? (
             <motion.div
               key="edit-prompt"
               initial={{ y: 24, opacity: 0 }}
@@ -1260,7 +1371,6 @@ export default function ResultsPage() {
                 {editCircle.zone}
               </p>
 
-              {/* Quick chips */}
               <div
                 style={{
                   display: "flex",
@@ -1274,7 +1384,7 @@ export default function ResultsPage() {
                     key={chip}
                     className="chip-vintage"
                     style={{ flexShrink: 0, padding: "7px 13px" }}
-                    onClick={() => handleCircleEditSubmit(chip)}
+                    onClick={() => void handleCircleEditSubmit(chip)}
                     disabled={busy}
                   >
                     {chip}
@@ -1282,15 +1392,16 @@ export default function ResultsPage() {
                 ))}
               </div>
 
-              {/* Text input */}
               <div style={{ position: "relative" }}>
                 <input
                   type="text"
                   value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
-                  onKeyDown={(e) =>
-                    e.key === "Enter" && handleCircleEditSubmit(editPrompt)
-                  }
+                  onChange={(event) => setEditPrompt(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void handleCircleEditSubmit(editPrompt);
+                    }
+                  }}
                   placeholder="Describe the change..."
                   autoFocus
                   style={{
@@ -1308,7 +1419,7 @@ export default function ResultsPage() {
                   }}
                 />
                 <button
-                  onClick={() => handleCircleEditSubmit(editPrompt)}
+                  onClick={() => void handleCircleEditSubmit(editPrompt)}
                   disabled={!editPrompt.trim() || busy}
                   style={{
                     position: "absolute",
@@ -1340,7 +1451,6 @@ export default function ResultsPage() {
                 </button>
               </div>
 
-              {/* Cancel */}
               <button
                 onClick={() => setEditCircle(null)}
                 style={{
@@ -1360,10 +1470,9 @@ export default function ResultsPage() {
                 draw again
               </button>
             </motion.div>
-          )}
+          ) : null}
 
-          {/* Refine row (always visible in studio, below FABs is fine) */}
-          {activePanel === null && (
+          {activePanel === null ? (
             <motion.div
               key="refine-row"
               initial={{ y: 16, opacity: 0 }}
@@ -1380,7 +1489,7 @@ export default function ResultsPage() {
               {PRESET_CHIPS.map((chip) => (
                 <button
                   key={chip}
-                  onClick={() => handleRefine(chip)}
+                  onClick={() => void handleRefine(chip)}
                   disabled={busy}
                   className="chip-vintage"
                   style={{
@@ -1393,15 +1502,16 @@ export default function ResultsPage() {
                   {chip}
                 </button>
               ))}
-              {/* Custom text input */}
               <div style={{ position: "relative", flexShrink: 0 }}>
                 <input
                   type="text"
                   value={refineText}
-                  onChange={(e) => setRefineText(e.target.value)}
-                  onKeyDown={(e) =>
-                    e.key === "Enter" && handleRefine(refineText)
-                  }
+                  onChange={(event) => setRefineText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void handleRefine(refineText);
+                    }
+                  }}
                   disabled={busy}
                   placeholder="Make it..."
                   style={{
@@ -1422,7 +1532,7 @@ export default function ResultsPage() {
                   }}
                 />
                 <button
-                  onClick={() => handleRefine(refineText)}
+                  onClick={() => void handleRefine(refineText)}
                   disabled={busy || !refineText.trim()}
                   style={{
                     position: "absolute",
@@ -1451,14 +1561,17 @@ export default function ResultsPage() {
                 </button>
               </div>
             </motion.div>
-          )}
+          ) : null}
         </AnimatePresence>
 
-        {/* FAB row */}
         <div className="studio-fab-row">
           <button
             className={`studio-fab${activePanel === "colors" ? " active" : ""}`}
-            onClick={() => togglePanel("colors")}
+            onClick={() => {
+              setActivePanel(activePanel === "colors" ? null : "colors");
+              setEditCircle(null);
+              setEditPrompt("");
+            }}
             disabled={busy}
           >
             <span className="studio-fab-icon">🎨</span>
@@ -1467,7 +1580,11 @@ export default function ResultsPage() {
 
           <button
             className={`studio-fab${activePanel === "edit" ? " active" : ""}`}
-            onClick={() => togglePanel("edit")}
+            onClick={() => {
+              setActivePanel(activePanel === "edit" ? null : "edit");
+              setEditCircle(null);
+              setEditPrompt("");
+            }}
             disabled={busy}
           >
             <span className="studio-fab-icon">✏️</span>
@@ -1475,12 +1592,23 @@ export default function ResultsPage() {
           </button>
 
           <button
-            className={`studio-fab${activePanel === "tryon" ? " active" : ""}`}
-            onClick={() => togglePanel("tryon")}
-            disabled={busy}
+            className={`studio-fab${activePanel === "preview3d" ? " active" : ""}`}
+            onClick={() => {
+              const opening = activePanel !== "preview3d";
+              setActivePanel(opening ? "preview3d" : null);
+              setEditCircle(null);
+              setEditPrompt("");
+              if (opening && activeConcept.image.imageData) {
+                void generateAnglesForConcept(activeIdx);
+              }
+            }}
+            disabled={!activeConcept.image.imageData}
+            style={{
+              opacity: activeConcept.image.imageData ? 1 : 0.45,
+            }}
           >
-            <span className="studio-fab-icon">🧢</span>
-            <span className="studio-fab-label">3D</span>
+            <span className="studio-fab-icon">🔄</span>
+            <span className="studio-fab-label">360°</span>
           </button>
         </div>
       </div>

@@ -1,21 +1,25 @@
-import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+import { generateJsonWithRetry } from "@/lib/gemini";
+import { Concept, isConcept } from "@/lib/hatlab";
+import { jsonError, jsonSuccess } from "@/lib/hatlab-server";
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
+    if (!process.env.GEMINI_API_KEY) {
+      return jsonError("GEMINI_API_KEY is not configured on the server.", {
+        retryable: false,
+        status: 500,
+      });
+    }
+
     const { originalConcept, analysis, refinementPrompt, zoneHint } = await req.json();
 
-    if (!originalConcept || !refinementPrompt) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
+    if (!isConcept(originalConcept) || typeof refinementPrompt !== "string" || !refinementPrompt.trim()) {
+      return jsonError("Missing required refinement fields.", {
+        retryable: false,
+        status: 400,
+      });
     }
 
     const prompt = `
@@ -46,25 +50,22 @@ Schema:
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const parsed: Concept = await generateJsonWithRetry({
       model: "gemini-3.1-flash-lite-preview",
       contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.7,
-      },
+      guard: isConcept,
+      temperature: 0.7,
     });
 
-    const text = response.text;
-    if (!text) throw new Error("No response from Gemini");
-
-    const parsed = JSON.parse(text);
-    return NextResponse.json(parsed);
+    return jsonSuccess(parsed);
   } catch (error) {
-    console.error("Gemini API Error:", error);
-    return NextResponse.json(
-      { error: "Failed to refine concept." },
-      { status: 500 },
+    console.error("Gemini refinement error:", error);
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to refine concept.",
+      {
+        details: ["Concept refinement failed after retry."],
+        status: 502,
+      },
     );
   }
 }

@@ -1,16 +1,13 @@
-import { NextResponse } from "next/server";
-import { GoogleGenAI, Modality } from "@google/genai";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+import { Modality } from "@google/genai";
+import { ai, describeGeminiFailure, extractGeminiImage } from "@/lib/gemini";
+import { jsonError, jsonSuccess } from "@/lib/hatlab-server";
 
 export const maxDuration = 60;
+
 const GEMINI_IMAGE_MODELS = [
-  "gemini-3.1-flash-image-preview", // Nano Banana 2 — primary
-  "gemini-3-pro-image-preview", // Nano Banana Pro — fallback only
+  "gemini-3.1-flash-image-preview",
+  "gemini-3-pro-image-preview",
 ] as const;
-const DEFAULT_IMAGE_MIME_TYPE = "image/png";
 
 const PASTEL_BACKGROUNDS = [
   "soft lavender pastel",
@@ -23,88 +20,45 @@ const PASTEL_BACKGROUNDS = [
   "lilac purple pastel",
 ];
 
-type GenerateContentResponse = Awaited<
-  ReturnType<typeof ai.models.generateContent>
->;
-
-function extractGeminiImage(response: GenerateContentResponse) {
-  for (const candidate of response.candidates ?? []) {
-    for (const part of candidate.content?.parts ?? []) {
-      if (part.inlineData?.data) {
-        return {
-          imageData: part.inlineData.data,
-          mimeType: part.inlineData.mimeType || DEFAULT_IMAGE_MIME_TYPE,
-        };
-      }
-    }
-  }
-
-  if (response.data) {
-    return {
-      imageData: response.data,
-      mimeType: DEFAULT_IMAGE_MIME_TYPE,
-    };
-  }
-
-  return null;
-}
-
-function describeGeminiFailure(response: GenerateContentResponse) {
-  const reasons: string[] = [];
-  const promptBlockReason = response.promptFeedback?.blockReason;
-
-  if (promptBlockReason) {
-    reasons.push(`blocked: ${promptBlockReason}`);
-  }
-
-  for (const [idx, candidate] of (response.candidates ?? []).entries()) {
-    if (candidate.finishReason) {
-      reasons.push(`candidate ${idx + 1} finish: ${candidate.finishReason}`);
-    }
-  }
-
-  const text = response.text?.replace(/\s+/g, " ").trim();
-  if (text) {
-    reasons.push(`text: ${text.slice(0, 160)}`);
-  }
-
-  return reasons.length > 0 ? reasons.join("; ") : "no image returned";
-}
-
 export async function POST(req: Request) {
   try {
-    const { conceptName, baseColour, frontDesign, palette, style } =
-      await req.json();
-
     if (!process.env.GEMINI_API_KEY) {
-      return NextResponse.json(
-        { error: "GEMINI_API_KEY is not configured on the server." },
-        { status: 500 },
-      );
+      return jsonError("GEMINI_API_KEY is not configured on the server.", {
+        retryable: false,
+        status: 500,
+      });
     }
 
-    if (!frontDesign || !baseColour) {
-      return NextResponse.json(
-        { error: "Missing required image-generation fields." },
-        { status: 400 },
-      );
+    const { conceptName, baseColour, frontDesign, palette, style, anglePrompt } =
+      await req.json();
+
+    if (typeof frontDesign !== "string" || typeof baseColour !== "string") {
+      return jsonError("Missing required image-generation fields.", {
+        retryable: false,
+        status: 400,
+      });
     }
 
     const randomBg =
       PASTEL_BACKGROUNDS[Math.floor(Math.random() * PASTEL_BACKGROUNDS.length)];
+
+    const cameraLine =
+      typeof anglePrompt === "string" && anglePrompt.length > 0
+        ? anglePrompt
+        : "Hat placed on an invisible surface, slightly angled to show front and side profile (3/4 view)";
 
     const prompt = `Photorealistic product photography of a single dad hat (baseball cap, dad hat style with unstructured crown, curved brim, adjustable strap at back).
 
 Hat details:
 - Hat color: ${baseColour}
 - Front embroidery/design: ${frontDesign}
-- Color palette used: ${palette?.join(", ") || baseColour}
-- Style: ${style || "clean streetwear"}
-- Concept name: ${conceptName}
+- Color palette used: ${Array.isArray(palette) ? palette.join(", ") : baseColour}
+- Style: ${typeof style === "string" ? style : "clean streetwear"}
+- Concept name: ${typeof conceptName === "string" ? conceptName : "HatLab concept"}
 
 Photography style:
 - Clean, bright studio shot
-- Hat placed on an invisible surface, slightly angled to show front and side profile (3/4 view)
+- ${cameraLine}
 - Background: solid flat ${randomBg} background, completely uniform
 - Soft shadow underneath the hat
 - High detail, sharp embroidery visible on front panel
@@ -125,9 +79,8 @@ Photography style:
         });
 
         const image = extractGeminiImage(response);
-
         if (image) {
-          return NextResponse.json({
+          return jsonSuccess({
             imageData: image.imageData,
             mimeType: image.mimeType,
             background: randomBg,
@@ -138,28 +91,22 @@ Photography style:
         attemptErrors.push(`${model}: ${describeGeminiFailure(response)}`);
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Unknown Gemini error";
+          error instanceof Error ? error.message : "Unknown Gemini image error";
         attemptErrors.push(`${model}: ${message}`);
       }
     }
 
-    return NextResponse.json(
+    return jsonError(
+      "Image generation did not return an image for this concept.",
       {
-        error:
-          "Image generation did not return an image for this concept. Check model access or try refining the prompt.",
         details: attemptErrors,
+        status: 502,
       },
-      { status: 502 },
     );
   } catch (error) {
     console.error("Hat image generation error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to generate hat image.",
-      },
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to generate hat image.",
       { status: 500 },
     );
   }

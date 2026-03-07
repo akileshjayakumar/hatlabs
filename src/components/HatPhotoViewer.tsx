@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { Loader2 } from "lucide-react";
+import { toDataUrl } from "@/lib/hatlab";
 
 interface HatPhotoViewerProps {
   imageData: string | null;
@@ -28,6 +29,7 @@ export default function HatPhotoViewer({
 }: HatPhotoViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [isDraggingState, setIsDraggingState] = useState(false);
   const isDragging = useRef(false);
@@ -216,10 +218,24 @@ export default function HatPhotoViewer({
       const x = (e.clientX - rect.left) * (canvas.width / rect.width);
       const y = (e.clientY - rect.top) * (canvas.height / rect.height);
 
-      const cx = (drawStart.current.x + x) / 2;
-      const cy = (drawStart.current.y + y) / 2;
+      const imageRect = imageRef.current?.getBoundingClientRect();
+      const centerX = (drawStart.current.x + x) / 2;
+      const centerY = (drawStart.current.y + y) / 2;
+      const centerClientX = rect.left + (centerX / canvas.width) * rect.width;
+      const centerClientY = rect.top + (centerY / canvas.height) * rect.height;
 
-      const zone = getZoneFromFraction(cx / canvas.width, cy / canvas.height);
+      const zone = imageRect
+        ? getZoneFromFraction(
+            Math.min(
+              Math.max((centerClientX - imageRect.left) / imageRect.width, 0),
+              1,
+            ),
+            Math.min(
+              Math.max((centerClientY - imageRect.top) / imageRect.height, 0),
+              1,
+            ),
+          )
+        : getZoneFromFraction(centerX / canvas.width, centerY / canvas.height);
       drawStart.current = null;
       onCircleDrawn?.(zone);
     },
@@ -249,12 +265,36 @@ export default function HatPhotoViewer({
       onTouchEnd={onTouchEnd}
     >
       {isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-black/30 backdrop-blur-sm">
-          <div className="w-16 h-16 rounded-full bg-black/60 flex items-center justify-center mb-3">
-            <Loader2 className="w-8 h-8 animate-spin text-white" />
-          </div>
-          <p className="text-white font-semibold text-base drop-shadow-lg animate-pulse">
-            Generating hat...
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 20,
+            background: "rgba(242,234,217,0.7)",
+            backdropFilter: "blur(6px)",
+            gap: "12px",
+          }}
+        >
+          <Loader2
+            size={28}
+            className="animate-spin"
+            style={{ color: "var(--color-brand)" }}
+          />
+          <p
+            style={{
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
+              fontWeight: 600,
+              fontSize: "0.9rem",
+              color: "var(--color-text-muted)",
+              letterSpacing: "-0.01em",
+            }}
+          >
+            designing hat…
           </p>
         </div>
       )}
@@ -270,7 +310,8 @@ export default function HatPhotoViewer({
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={`data:${mimeType};base64,${imageData}`}
+            ref={imageRef}
+            src={toDataUrl(imageData, mimeType)}
             alt="Generated dad hat"
             className="max-w-[90%] max-h-[90%] object-contain drop-shadow-2xl pointer-events-none"
             draggable={false}
@@ -279,9 +320,28 @@ export default function HatPhotoViewer({
       )}
 
       {!imageData && !isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-black/30">
-          <div className="text-5xl mb-3">🧢</div>
-          <p className="text-sm font-medium">Hat preview will appear here</p>
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+          }}
+        >
+          <p
+            style={{
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
+              fontSize: "0.85rem",
+              color: "var(--color-text-muted)",
+              opacity: 0.5,
+            }}
+          >
+            hat preview
+          </p>
         </div>
       )}
 
@@ -305,12 +365,24 @@ export default function HatPhotoViewer({
 
       {/* Reset button (only when not in edit mode) */}
       {imageData && !isLoading && !editMode && (
-        <div className="absolute bottom-3 right-3 z-10">
+        <div style={{ position: "absolute", bottom: "12px", right: "12px", zIndex: 10 }}>
           <button
             onClick={resetTransform}
-            className="text-xs bg-white/70 backdrop-blur-md text-black/60 px-3 py-1.5 rounded-full font-medium hover:bg-white/90 transition-colors"
+            style={{
+              padding: "5px 13px",
+              borderRadius: "980px",
+              background: "var(--color-surface)",
+              border: "1.5px solid var(--color-border)",
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
+              fontWeight: 600,
+              fontSize: "0.72rem",
+              color: "var(--color-text-muted)",
+              cursor: "pointer",
+              letterSpacing: "0.01em",
+            }}
           >
-            Reset
+            reset
           </button>
         </div>
       )}

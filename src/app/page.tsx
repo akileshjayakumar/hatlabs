@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Camera, Images, Loader2, X, ArrowRight } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -12,6 +12,15 @@ export default function Home() {
   const [images, setImages] = useState<string[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const [hasStoredConcepts, setHasStoredConcepts] = useState(false);
+
+  useEffect(() => {
+    const rawData = sessionStorage.getItem("hatlab-concepts");
+    if (rawData) {
+      setHasStoredConcepts(true);
+    }
+  }, []);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -22,13 +31,8 @@ export default function Home() {
         audio: false,
       });
       streamRef.current = stream;
+      setIsCameraReady(false);
       setShowCamera(true);
-      // Wait for the video element to mount, then attach stream
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      }, 50);
     } catch {
       alert("Could not access camera. Please allow camera permissions.");
     }
@@ -37,12 +41,23 @@ export default function Home() {
   const closeCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    setIsCameraReady(false);
     setShowCamera(false);
   }, []);
 
+  useEffect(() => {
+    if (!showCamera || !videoRef.current || !streamRef.current) {
+      return;
+    }
+
+    videoRef.current.srcObject = streamRef.current;
+  }, [showCamera]);
+
+  useEffect(() => closeCamera, [closeCamera]);
+
   const capturePhoto = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !video.videoWidth || !video.videoHeight) return;
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -283,6 +298,7 @@ export default function Home() {
         transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
         className="px-7 pb-16 flex flex-col gap-4"
       >
+
         {/* Generate — appears when photos selected */}
         <AnimatePresence>
           {images.length > 0 && (
@@ -426,38 +442,36 @@ export default function Home() {
             ref={videoRef}
             autoPlay
             playsInline
+            onLoadedMetadata={() => setIsCameraReady(true)}
             style={{ width: "100%", maxWidth: "480px", borderRadius: "12px" }}
           />
-          <div style={{ display: "flex", gap: "16px" }}>
+          <div style={{ display: "flex", gap: "12px" }}>
             <button
               onClick={capturePhoto}
-              style={{
-                padding: "14px 32px",
-                background: "var(--color-primary, #c87941)",
-                color: "white",
-                border: "none",
-                borderRadius: "10px",
-                fontSize: "16px",
-                cursor: "pointer",
-                fontFamily: "var(--font-serif)",
-              }}
+              className="btn-primary"
+              disabled={!isCameraReady}
+              style={{ height: "56px", padding: "0 32px" }}
             >
-              Capture
+              {isCameraReady ? "capture" : "loading…"}
             </button>
             <button
               onClick={closeCamera}
               style={{
-                padding: "14px 32px",
-                background: "transparent",
-                color: "white",
-                border: "2px solid white",
+                height: "56px",
+                padding: "0 32px",
                 borderRadius: "10px",
-                fontSize: "16px",
-                cursor: "pointer",
+                border: "2px solid rgba(255,245,236,0.6)",
+                background: "transparent",
+                color: "rgba(255,245,236,0.85)",
                 fontFamily: "var(--font-serif)",
+                fontWeight: 700,
+                fontSize: "1.05rem",
+                fontStyle: "italic",
+                textTransform: "lowercase",
+                cursor: "pointer",
               }}
             >
-              Cancel
+              cancel
             </button>
           </div>
         </div>

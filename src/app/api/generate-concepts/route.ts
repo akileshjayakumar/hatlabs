@@ -1,35 +1,40 @@
-import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+import { generateJsonWithRetry } from "@/lib/gemini";
+import {
+  getInlineImageParts,
+  isResultsData,
+} from "@/lib/hatlab";
+import { jsonError, jsonSuccess } from "@/lib/hatlab-server";
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    if (!process.env.GEMINI_API_KEY) {
+      return jsonError("GEMINI_API_KEY is not configured on the server.", {
+        retryable: false,
+        status: 500,
+      });
+    }
 
-    // Accept either a single `image` string or an `images` array
-    const rawImages: string[] = body.images
+    const body = await req.json();
+    const rawImages: string[] = Array.isArray(body.images)
       ? body.images
-      : body.image
+      : typeof body.image === "string"
         ? [body.image]
         : [];
 
-    if (!rawImages.length) {
-      return NextResponse.json({ error: "No image provided" }, { status: 400 });
+    const images = rawImages
+      .filter((entry): entry is string => typeof entry === "string")
+      .slice(0, 4);
+
+    if (!images.length) {
+      return jsonError("No image provided.", {
+        retryable: false,
+        status: 400,
+      });
     }
 
-    const imageparts = rawImages.map((img: string) => ({
-      inlineData: {
-        data: img.substring(img.indexOf(",") + 1),
-        mimeType: img.substring(img.indexOf(":") + 1, img.indexOf(";")),
-      },
-    }));
-
-    const prompt = `You are a hat design expert. Analyze this image and extract its visual DNA. Then generate 3 distinct embroidery-safe dad hat concepts based on it.
+    const prompt = `You are a hat design expert. Analyze these reference images and extract their shared visual DNA. Then generate 3 distinct embroidery-safe dad hat concepts based on them.
 
 Keep the concepts concise and interface-ready:
 - concept names: 1-2 words
@@ -73,25 +78,22 @@ Return ONLY valid JSON matching this exact schema (no extra text):
   ]
 }`;
 
-    const response = await ai.models.generateContent({
+    const parsed = await generateJsonWithRetry({
       model: "gemini-3.1-flash-lite-preview",
-      contents: [prompt, ...imageparts],
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.7,
-      },
+      contents: [prompt, ...getInlineImageParts(images)],
+      guard: isResultsData,
+      temperature: 0.7,
     });
 
-    const text = response.text;
-    if (!text) throw new Error("No response from Gemini");
-
-    const parsed = JSON.parse(text);
-    return NextResponse.json(parsed);
+    return jsonSuccess(parsed);
   } catch (error) {
-    console.error("Gemini API Error:", error);
-    return NextResponse.json(
-      { error: "Failed to generate concepts." },
-      { status: 500 },
+    console.error("Gemini concept generation error:", error);
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to generate concepts.",
+      {
+        details: ["Concept generation failed after retry."],
+        status: 502,
+      },
     );
   }
 }
