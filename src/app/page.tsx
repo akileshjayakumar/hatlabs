@@ -157,7 +157,7 @@ export default function Home() {
             <>
               Hat
               <br />
-              Lab.
+              Labs.
             </>
           ) : images.length === MAX_IMAGES ? (
             <>

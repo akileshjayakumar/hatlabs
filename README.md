@@ -1,4 +1,4 @@
-# HatLab
+# HatLabs
 
 ### What is it?
 HatLab is a fun, mobile-first app that turns your personal style into custom hat designs. Whether it's a photo of your favorite outfit, a cool landscape, or just a "vibe," HatLab uses AI to imagine and create the perfect dad hat for you.
