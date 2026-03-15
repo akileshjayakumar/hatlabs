@@ -202,4 +202,44 @@ body {
     transform: scale(1.12);
     box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-brand);
   }
+
+  /* Inline toast for errors */
+  .toast-error {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(28, 21, 16, 0.88);
+    backdrop-filter: blur(10px);
+    color: #fff5ec;
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 0.88rem;
+    padding: 12px 20px;
+    border-radius: 14px;
+    z-index: 200;
+    max-width: calc(100% - 48px);
+    text-align: center;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    pointer-events: none;
+  }
+}
+
+/* Focus-visible states for keyboard navigation */
+.btn-primary:focus-visible,
+.chip-vintage:focus-visible,
+.studio-fab:focus-visible,
+.swatch-dot:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+/* Subtle pulse for ready indicator */
+@keyframes ready-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.ready-dot {
+  animation: ready-pulse 2s ease-in-out infinite;
 }

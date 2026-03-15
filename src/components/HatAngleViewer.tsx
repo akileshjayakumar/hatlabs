@@ -205,7 +205,7 @@ export default function HatAngleViewer({ angles }: HatAngleViewerProps) {
                   textAlign: "center",
                 }}
               >
-                Couldn't render this angle.
+                Couldn&apos;t render this angle.
               </p>
             ) : (
               <div
@@ -218,10 +218,10 @@ export default function HatAngleViewer({ angles }: HatAngleViewerProps) {
               >
                 <Loader2
                   size={28}
+                  className="animate-spin"
                   style={{
                     color: "var(--color-brand)",
                     opacity: 0.5,
-                    animation: "spin 1s linear infinite",
                   }}
                 />
                 <p
@@ -278,13 +278,6 @@ export default function HatAngleViewer({ angles }: HatAngleViewerProps) {
         ))}
       </div>
 
-      {/* Keyframe for spinner */}
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 }

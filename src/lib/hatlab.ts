@@ -1,3 +1,27 @@
+import { z } from "zod";
+
+export const conceptSchema = z.object({
+  name: z.string(),
+  base_colour: z.string(),
+  front_design: z.string(),
+  palette: z.array(z.string()),
+  style: z.string(),
+  rationale: z.string(),
+});
+
+export const analysisDataSchema = z.object({
+  visual_summary: z.string(),
+  palette: z.array(z.string()),
+  symbols: z.array(z.string()),
+  style_keywords: z.array(z.string()),
+  hat_design_opportunities: z.array(z.string()),
+});
+
+export const resultsDataSchema = z.object({
+  analysis: analysisDataSchema,
+  concepts: z.array(conceptSchema),
+});
+
 export interface Concept {
   name: string;
   base_colour: string;
@@ -62,23 +86,6 @@ export function toDataUrl(imageData: string, mimeType = "image/png") {
   return `data:${mimeType};base64,${imageData}`;
 }
 
-export function getInlineImageParts(images: string[]) {
-  return images.map((img) => {
-    const commaIndex = img.indexOf(",");
-    const mimeStart = img.indexOf(":");
-    const mimeEnd = img.indexOf(";");
-
-    return {
-      inlineData: {
-        data: commaIndex >= 0 ? img.slice(commaIndex + 1) : img,
-        mimeType:
-          mimeStart >= 0 && mimeEnd > mimeStart
-            ? img.slice(mimeStart + 1, mimeEnd)
-            : "image/jpeg",
-      },
-    };
-  });
-}
 
 export function isConcept(candidate: unknown): candidate is Concept {
   if (!candidate || typeof candidate !== "object") return false;
@@ -112,18 +119,3 @@ export function isResultsData(candidate: unknown): candidate is ResultsData {
   );
 }
 
-export function parseGeminiJson<T>(
-  text: string | undefined,
-  guard: (value: unknown) => value is T,
-) {
-  if (!text) {
-    throw new Error("Gemini returned an empty response.");
-  }
-
-  const parsed = JSON.parse(text);
-  if (!guard(parsed)) {
-    throw new Error("Gemini returned a response with an unexpected shape.");
-  }
-
-  return parsed;
-}

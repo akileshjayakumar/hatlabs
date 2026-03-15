@@ -1,13 +1,9 @@
-import { Modality } from "@google/genai";
-import { ai, describeGeminiFailure, extractGeminiImage } from "@/lib/gemini";
+import { generateText } from "ai";
 import { jsonError, jsonSuccess } from "@/lib/hatlab-server";
 
 export const maxDuration = 60;
 
-const GEMINI_IMAGE_MODELS = [
-  "gemini-3.1-flash-image-preview",
-  "gemini-3-pro-image-preview",
-] as const;
+const IMAGE_MODEL = "google/gemini-2.5-flash-image";
 
 const PASTEL_BACKGROUNDS = [
   "soft lavender pastel",
@@ -22,8 +18,8 @@ const PASTEL_BACKGROUNDS = [
 
 export async function POST(req: Request) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      return jsonError("GEMINI_API_KEY is not configured on the server.", {
+    if (!process.env.AI_GATEWAY_API_KEY) {
+      return jsonError("AI_GATEWAY_API_KEY is not configured on the server.", {
         retryable: false,
         status: 500,
       });
@@ -66,42 +62,27 @@ Photography style:
 - No text or labels except on the hat itself
 - No hands, no mannequin, just the hat`;
 
-    const attemptErrors: string[] = [];
+    const result = await generateText({
+      model: IMAGE_MODEL,
+      prompt,
+    });
 
-    for (const model of GEMINI_IMAGE_MODELS) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            responseModalities: [Modality.IMAGE],
-          },
-        });
+    const imageFile = result.files.find((f) =>
+      f.mediaType?.startsWith("image/"),
+    );
 
-        const image = extractGeminiImage(response);
-        if (image) {
-          return jsonSuccess({
-            imageData: image.imageData,
-            mimeType: image.mimeType,
-            background: randomBg,
-            model,
-          });
-        }
-
-        attemptErrors.push(`${model}: ${describeGeminiFailure(response)}`);
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown Gemini image error";
-        attemptErrors.push(`${model}: ${message}`);
-      }
+    if (imageFile) {
+      return jsonSuccess({
+        imageData: imageFile.base64,
+        mimeType: imageFile.mediaType || "image/png",
+        background: randomBg,
+        model: IMAGE_MODEL,
+      });
     }
 
     return jsonError(
       "Image generation did not return an image for this concept.",
-      {
-        details: attemptErrors,
-        status: 502,
-      },
+      { status: 502 },
     );
   } catch (error) {
     console.error("Hat image generation error:", error);

@@ -9,6 +9,7 @@ interface HatPhotoViewerProps {
   mimeType?: string;
   isLoading?: boolean;
   editMode?: boolean;
+  tintColor?: string;
   onCircleDrawn?: (zone: string) => void;
 }
 
@@ -25,6 +26,7 @@ export default function HatPhotoViewer({
   mimeType = "image/png",
   isLoading = false,
   editMode = false,
+  tintColor,
   onCircleDrawn,
 }: HatPhotoViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -194,13 +196,26 @@ export default function HatPhotoViewer({
       const rx = Math.max(Math.abs(x - drawStart.current.x) / 2, 10);
       const ry = Math.max(Math.abs(y - drawStart.current.y) / 2, 10);
 
+      // Outer glow
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx + 2, ry + 2, 0, 0, 2 * Math.PI);
+      ctx.strokeStyle = "rgba(184, 92, 42, 0.15)";
+      ctx.lineWidth = 6;
+      ctx.setLineDash([]);
+      ctx.stroke();
+
+      // Main circle
       ctx.beginPath();
       ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
-      ctx.strokeStyle = "rgba(184, 92, 42, 0.9)";
-      ctx.lineWidth = 3;
-      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = "rgba(184, 92, 42, 0.85)";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 5]);
       ctx.stroke();
-      ctx.fillStyle = "rgba(184, 92, 42, 0.12)";
+
+      // Fill
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(184, 92, 42, 0.08)";
       ctx.fill();
     },
     [],
@@ -251,8 +266,6 @@ export default function HatPhotoViewer({
       className="w-full h-full relative select-none overflow-hidden"
       style={{
         backgroundColor: "transparent",
-        outline: editMode ? "2px dashed rgba(184,92,42,0.5)" : "none",
-        outlineOffset: "-2px",
       }}
       ref={containerRef}
       onMouseDown={onMouseDown}
@@ -316,6 +329,19 @@ export default function HatPhotoViewer({
             className="max-w-[90%] max-h-[90%] object-contain drop-shadow-2xl pointer-events-none"
             draggable={false}
           />
+          {tintColor && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: tintColor,
+                mixBlendMode: "color",
+                opacity: 0.45,
+                pointerEvents: "none",
+                transition: "background 300ms ease",
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -345,6 +371,21 @@ export default function HatPhotoViewer({
         </div>
       )}
 
+      {/* Edit mode border indicator */}
+      {editMode && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            border: "2px solid rgba(184, 92, 42, 0.3)",
+            borderRadius: "0px",
+            pointerEvents: "none",
+            zIndex: 5,
+            transition: "border-color 200ms ease",
+          }}
+        />
+      )}
+
       {/* Canvas overlay for circle-to-edit */}
       <canvas
         ref={canvasRef}
@@ -368,6 +409,7 @@ export default function HatPhotoViewer({
         <div style={{ position: "absolute", bottom: "12px", right: "12px", zIndex: 10 }}>
           <button
             onClick={resetTransform}
+            aria-label="Reset zoom and position"
             style={{
               padding: "5px 13px",
               borderRadius: "980px",

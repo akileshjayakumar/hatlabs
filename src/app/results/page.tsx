@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Download, Loader2, RefreshCw, Send } from "lucide-react";
+import { ArrowLeft, Download, Loader2, Palette, Pencil, RefreshCw, RotateCw, Send } from "lucide-react";
 import dynamic from "next/dynamic";
 import {
   AnalysisData,
@@ -62,6 +62,7 @@ interface ImageState {
   mimeType?: string;
   background?: string;
   error?: string;
+  generatedBaseColour?: string;
 }
 
 interface ConceptView extends Concept {
@@ -115,8 +116,14 @@ export default function ResultsPage() {
   const [activePanel, setActivePanel] = useState<StudioPanel>(null);
   const [editCircle, setEditCircle] = useState<{ zone: string } | null>(null);
   const [editPrompt, setEditPrompt] = useState("");
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const [angleImages, setAngleImages] = useState<Record<number, AngleImage[]>>({});
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3500);
+  }, []);
 
   const galleryRef = useRef<HTMLDivElement>(null);
   const dataRef = useRef<ResultsViewData | null>(null);
@@ -197,6 +204,7 @@ export default function ResultsPage() {
           imageData: imageResult.imageData,
           mimeType: imageResult.mimeType,
           background: imageResult.background,
+          generatedBaseColour: concept.base_colour,
         });
       } catch (error) {
         if (requestVersionsRef.current[idx] !== requestVersion) {
@@ -520,12 +528,12 @@ export default function ResultsPage() {
         clearAnglesForConcept(activeIdx);
         void generateHatImageForConcept(activeIdx, { force: true });
       } catch (error) {
-        alert(error instanceof Error ? error.message : "Failed to refine concept.");
+        showToast(error instanceof Error ? error.message : "Failed to refine concept.");
       } finally {
         setIsRefining(false);
       }
     },
-    [activeIdx, clearAnglesForConcept, generateHatImageForConcept, isRefining, saveSlimResults],
+    [activeIdx, clearAnglesForConcept, generateHatImageForConcept, isRefining, saveSlimResults, showToast],
   );
 
   const handleColorSelect = useCallback(
@@ -541,15 +549,12 @@ export default function ResultsPage() {
       next.concepts[activeIdx] = {
         ...next.concepts[activeIdx],
         base_colour: colorHex,
-        image: createIdleImageState(),
       };
 
       setData(next);
       saveSlimResults(next);
-      clearAnglesForConcept(activeIdx);
-      void generateHatImageForConcept(activeIdx, { force: true });
     },
-    [activeIdx, clearAnglesForConcept, generateHatImageForConcept, saveSlimResults],
+    [activeIdx, saveSlimResults],
   );
 
   const handleCircleEditSubmit = useCallback(
@@ -919,6 +924,7 @@ export default function ResultsPage() {
               >
                 {concept.image.status === "ready" && (
                   <button
+                    aria-label={`Download ${concept.name} hat image`}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDownload(idx);
@@ -941,7 +947,7 @@ export default function ResultsPage() {
                       zIndex: 10,
                     }}
                   >
-                    <Download size={15} />
+                    <Download size={15} aria-hidden />
                   </button>
                 )}
                 <div
@@ -1111,6 +1117,12 @@ export default function ResultsPage() {
             mimeType={activeConcept.image.mimeType}
             isLoading={activeConcept.image.status === "loading" || activeConcept.image.status === "idle"}
             editMode={activePanel === "edit" && !editCircle}
+            tintColor={
+              activeConcept.image.generatedBaseColour &&
+              activeConcept.base_colour.toLowerCase() !== activeConcept.image.generatedBaseColour.toLowerCase()
+                ? activeConcept.base_colour
+                : undefined
+            }
             onCircleDrawn={(zone) => setEditCircle({ zone })}
           />
         )}
@@ -1132,6 +1144,7 @@ export default function ResultsPage() {
         }}
       >
         <button
+          aria-label="Back to gallery"
           onClick={() => {
             setActivePanel(null);
             setEditCircle(null);
@@ -1174,6 +1187,7 @@ export default function ResultsPage() {
             />
           ) : (
             <span
+              className="ready-dot"
               style={{
                 width: "6px",
                 height: "6px",
@@ -1573,8 +1587,9 @@ export default function ResultsPage() {
               setEditPrompt("");
             }}
             disabled={busy}
+            aria-label="Change hat color"
           >
-            <span className="studio-fab-icon">🎨</span>
+            <span className="studio-fab-icon"><Palette size={20} /></span>
             <span className="studio-fab-label">Colors</span>
           </button>
 
@@ -1586,8 +1601,9 @@ export default function ResultsPage() {
               setEditPrompt("");
             }}
             disabled={busy}
+            aria-label="Edit hat design"
           >
-            <span className="studio-fab-icon">✏️</span>
+            <span className="studio-fab-icon"><Pencil size={20} /></span>
             <span className="studio-fab-label">Edit</span>
           </button>
 
@@ -1603,15 +1619,30 @@ export default function ResultsPage() {
               }
             }}
             disabled={!activeConcept.image.imageData}
+            aria-label="View hat in 360 degrees"
             style={{
               opacity: activeConcept.image.imageData ? 1 : 0.45,
             }}
           >
-            <span className="studio-fab-icon">🔄</span>
+            <span className="studio-fab-icon"><RotateCw size={20} /></span>
             <span className="studio-fab-label">360°</span>
           </button>
         </div>
       </div>
+
+      {/* Error toast */}
+      <AnimatePresence>
+        {toastMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            className="toast-error"
+          >
+            {toastMsg}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

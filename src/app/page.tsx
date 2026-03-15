@@ -13,14 +13,7 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [isCameraReady, setIsCameraReady] = useState(false);
-  const [hasStoredConcepts, setHasStoredConcepts] = useState(false);
-
-  useEffect(() => {
-    const rawData = sessionStorage.getItem("hatlab-concepts");
-    if (rawData) {
-      setHasStoredConcepts(true);
-    }
-  }, []);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -34,7 +27,8 @@ export default function Home() {
       setIsCameraReady(false);
       setShowCamera(true);
     } catch {
-      alert("Could not access camera. Please allow camera permissions.");
+      setCameraError("Could not access camera. Please allow camera permissions.");
+      setTimeout(() => setCameraError(null), 3500);
     }
   }, []);
 
@@ -266,6 +260,7 @@ export default function Home() {
                   />
                   <button
                     onClick={() => removeImage(i)}
+                    aria-label={`Remove photo ${i + 1}`}
                     style={{
                       position: "absolute",
                       top: "-7px",
@@ -345,6 +340,7 @@ export default function Home() {
                 e.currentTarget.style.boxShadow = "0 4px 0 var(--color-text)";
               }}
               disabled={isProcessing}
+              aria-label="Choose photos from library"
               style={{
                 flex: 1,
                 height: "56px",
@@ -394,6 +390,7 @@ export default function Home() {
                 e.currentTarget.style.boxShadow = "0 4px 0 var(--color-text)";
               }}
               disabled={isProcessing}
+              aria-label="Take a photo with camera"
               className="btn-primary"
               style={{
                 flex: 1,
@@ -422,6 +419,20 @@ export default function Home() {
         onChange={handleGallerySelect}
         className="hidden"
       />
+
+      {/* Error toast */}
+      <AnimatePresence>
+        {cameraError && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            className="toast-error"
+          >
+            {cameraError}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Camera modal */}
       {showCamera && (

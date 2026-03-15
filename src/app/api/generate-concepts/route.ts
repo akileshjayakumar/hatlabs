@@ -1,16 +1,15 @@
-import { generateJsonWithRetry } from "@/lib/gemini";
-import {
-  getInlineImageParts,
-  isResultsData,
-} from "@/lib/hatlab";
+import { generateText, Output } from "ai";
+import { resultsDataSchema } from "@/lib/hatlab";
 import { jsonError, jsonSuccess } from "@/lib/hatlab-server";
 
 export const maxDuration = 60;
 
+const TEXT_MODEL = "google/gemini-2.5-flash";
+
 export async function POST(req: Request) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      return jsonError("GEMINI_API_KEY is not configured on the server.", {
+    if (!process.env.AI_GATEWAY_API_KEY) {
+      return jsonError("AI_GATEWAY_API_KEY is not configured on the server.", {
         retryable: false,
         status: 500,
       });
@@ -39,59 +38,33 @@ export async function POST(req: Request) {
 Keep the concepts concise and interface-ready:
 - concept names: 1-2 words
 - style: 1-2 words only
-- rationale: max 6 words
+- rationale: max 6 words`;
 
-Return ONLY valid JSON matching this exact schema (no extra text):
-{
-  "analysis": {
-    "visual_summary": "One sentence summary of the image vibe",
-    "palette": ["hex or color name 1", "hex or color name 2", "hex or color name 3"],
-    "symbols": ["main element 1", "main element 2"],
-    "style_keywords": ["keyword1", "keyword2", "keyword3"],
-    "hat_design_opportunities": ["idea1", "idea2"]
-  },
-  "concepts": [
-    {
-      "name": "Minimal",
-      "base_colour": "a specific color like 'cream', 'black', 'navy', 'forest green' or hex code",
-      "front_design": "VERY SPECIFIC embroidery description: e.g. 'small centered coffee cup icon in dark brown thread with curved text BREW below it'",
-      "palette": ["color1", "color2"],
-      "style": "minimal",
-      "rationale": "Simple and easy to wear"
-    },
-    {
-      "name": "Streetwear",
-      "base_colour": "a specific color",
-      "front_design": "VERY SPECIFIC embroidery description",
-      "palette": ["color1", "color2"],
-      "style": "graphic",
-      "rationale": "Stronger presence on hat"
-    },
-    {
-      "name": "Premium Merch",
-      "base_colour": "a specific color",
-      "front_design": "VERY SPECIFIC embroidery description",
-      "palette": ["color1", "color2"],
-      "style": "premium",
-      "rationale": "Feels polished and elevated"
-    }
-  ]
-}`;
-
-    const parsed = await generateJsonWithRetry({
-      model: "gemini-3.1-flash-lite-preview",
-      contents: [prompt, ...getInlineImageParts(images)],
-      guard: isResultsData,
-      temperature: 0.7,
+    const { output } = await generateText({
+      model: TEXT_MODEL,
+      output: Output.object({ schema: resultsDataSchema }),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            ...images.map((img) => ({ type: "image" as const, image: img })),
+          ],
+        },
+      ],
     });
 
-    return jsonSuccess(parsed);
+    if (!output) {
+      throw new Error("Model returned no structured output.");
+    }
+
+    return jsonSuccess(output);
   } catch (error) {
-    console.error("Gemini concept generation error:", error);
+    console.error("Concept generation error:", error);
     return jsonError(
       error instanceof Error ? error.message : "Failed to generate concepts.",
       {
-        details: ["Concept generation failed after retry."],
+        details: ["Concept generation failed."],
         status: 502,
       },
     );

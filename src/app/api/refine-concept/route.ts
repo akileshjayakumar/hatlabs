@@ -1,13 +1,15 @@
-import { generateJsonWithRetry } from "@/lib/gemini";
-import { Concept, isConcept } from "@/lib/hatlab";
+import { generateText, Output } from "ai";
+import { isConcept, conceptSchema } from "@/lib/hatlab";
 import { jsonError, jsonSuccess } from "@/lib/hatlab-server";
 
 export const maxDuration = 60;
 
+const TEXT_MODEL = "google/gemini-2.5-flash";
+
 export async function POST(req: Request) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      return jsonError("GEMINI_API_KEY is not configured on the server.", {
+    if (!process.env.AI_GATEWAY_API_KEY) {
+      return jsonError("AI_GATEWAY_API_KEY is not configured on the server.", {
         retryable: false,
         status: 500,
       });
@@ -33,37 +35,29 @@ ${JSON.stringify(analysis)}
 
 User Refinement Request: "${refinementPrompt}"${zoneHint ? `\nArea of focus on the hat: ${zoneHint}` : ""}
 
-Translate this request into an updated embroidery-safe dad hat concept. Ensure you only return valid JSON.
+Translate this request into an updated embroidery-safe dad hat concept.
 Keep the output concise and interface-ready:
 - name: 1-2 words
 - style: 1-2 words
-- rationale: max 6 words
+- rationale: max 6 words`;
 
-Schema:
-{
-  "name": "Updated Concept Name",
-  "base_colour": "hex code or basic colour name",
-  "front_design": "Description of the front embroidery",
-  "palette": ["colour1", "colour2"],
-  "style": "Short style description",
-  "rationale": "Short wearable reason"
-}
-`;
-
-    const parsed: Concept = await generateJsonWithRetry({
-      model: "gemini-3.1-flash-lite-preview",
-      contents: prompt,
-      guard: isConcept,
-      temperature: 0.7,
+    const { output } = await generateText({
+      model: TEXT_MODEL,
+      output: Output.object({ schema: conceptSchema }),
+      prompt,
     });
 
-    return jsonSuccess(parsed);
+    if (!output) {
+      throw new Error("Model returned no structured output.");
+    }
+
+    return jsonSuccess(output);
   } catch (error) {
-    console.error("Gemini refinement error:", error);
+    console.error("Refinement error:", error);
     return jsonError(
       error instanceof Error ? error.message : "Failed to refine concept.",
       {
-        details: ["Concept refinement failed after retry."],
+        details: ["Concept refinement failed."],
         status: 502,
       },
     );
